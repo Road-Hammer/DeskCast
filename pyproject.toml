@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deskcast"
+version = "0.1.0"
+description = "Document → dual-host desk-cast commentary → TTS → video (laptop-first)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Susquehanna Timberwolf Lines, LLC" }]
+maintainers = [{ name = "Susquehanna Timberwolf Lines, LLC" }]
+keywords = ["deskcast", "STWL", "video", "tts", "document", "apache-2.0"]
+dependencies = [
+  "pypdf>=5.0.0",
+  "python-docx>=1.1.0",
+  "Pillow>=10.0.0",
+  "edge-tts>=6.1.0",
+  "pyttsx3>=2.90",
+  "httpx>=0.27.0",
+  "rich>=13.0.0",
+  "typer>=0.12.0",
+  "pydantic>=2.0.0",
+]
+
+[project.scripts]
+deskcast = "deskcast.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deskcast*"]
