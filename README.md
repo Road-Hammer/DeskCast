@@ -85,11 +85,42 @@ winget install -e --id Gyan.FFmpeg
 # Generate default host portraits + desk set
 python -m deskcast init-assets
 
+# Desktop UI (plan + produce)
+python -m deskcast ui
+
+# Plan legal structure / episodes only (no video)
+python -m deskcast plan path\to\contract.pdf --episode-minutes 20
+
 # Run on a sample / your doc (characters mode is default)
 python -m deskcast run path\to\document.pdf --title "Game Day Desk Cast" --no-llm
+
+# Large contracts / legislation (structure + multi-episode)
+python -m deskcast run path\to\addendum.pdf --legal --multi-episode --episode-minutes 20 --max-chunks 24 --no-llm
 ```
 
 Open a **new** terminal after installing FFmpeg so `ffmpeg` is on PATH.
+
+### Desktop UI
+
+```powershell
+python -m deskcast ui
+# or: deskcast-ui
+```
+
+- Browse PDF/DOCX/TXT → **Plan structure / episodes** → **Produce video(s)**
+- **Help** menu / **F1** / **FAQ** buttons for usage notes
+- Legal mode + multi-episode recommended for long contracts and legislation
+
+### Legal structure & episodes
+
+| Command / flag | Purpose |
+|----------------|---------|
+| `deskcast plan` | Parse Articles/Sections/Schedules; write `STRUCTURE.md` + `EPISODE_PLAN.md` |
+| `--legal` / `--no-legal` | Use legal tree + planner (default on) |
+| `--multi-episode` / `--single-episode` | Split long instruments vs one cast |
+| `--episode-minutes N` | Target airtime budget per episode |
+
+Long jobs write `out/<job>/episodes/ep01/…` plus `MASTER_INDEX.md`.
 
 ### Visual modes (phase 1 characters)
 
@@ -113,12 +144,15 @@ assets/
 --title "My Show"
 --visuals characters     # or hybrid / slides
 --broll path\to\images
---max-chunks 12          # keep short on weak laptops
+--max-chunks 24          # packs per episode (2–40)
 --voice-a en-US-GuyNeural
 --voice-b en-US-JennyNeural
 --offline-tts            # pyttsx3 only (no network)
 --no-llm                 # force heuristic script (fastest)
 --ollama-model llama3.2:1b
+--legal / --no-legal
+--multi-episode / --single-episode
+--episode-minutes 20
 ```
 
 ## Outputs
@@ -126,11 +160,13 @@ assets/
 ```text
 out/<job_id>/
   extracted.txt
-  outline.json
-  script.json
-  audio/                 # per-line wav/mp3
-  slides/                # png frames
-  deskcast.mp4           # final video
+  STRUCTURE.md / structure.json   # legal tree (when --legal)
+  EPISODE_PLAN.md                 # multi-episode map
+  MASTER_INDEX.md
+  episodes/ep01/deskcast.mp4      # per-episode packages
+  deskcast.mp4                    # convenience copy of ep01
+  outline.json / script.json
+  TRANSCRIPT.md / PACKAGES.md
   report.md
 ```
 

@@ -25,6 +25,7 @@ from .logic import (
     midshow_bridge,
     pick_color_line,
     pick_pbp_line,
+    pick_readthrough_line,
 )
 from .models import Line, Outline, Script
 
@@ -93,7 +94,18 @@ def _logic_script(outline: Outline) -> Script:
                 chunk_kind=ch.kind,
             )
         )
-        # Fold "must-not-miss" into color already via priority; no extra choppy beat
+        # Self-contained read-through so high-yield contract packs stand alone on audio
+        readthru = pick_readthrough_line(ch, dk)
+        if readthru:
+            segments.append(
+                Line(
+                    role="pbp" if i % 2 == 0 else "color",
+                    speaker=PBP_NAME if i % 2 == 0 else COLOR_NAME,
+                    text=readthru,
+                    chunk_index=ch.index,
+                    chunk_kind=ch.kind,
+                )
+            )
 
     close = [
         Line(role="color", speaker=COLOR_NAME, text=color_close),

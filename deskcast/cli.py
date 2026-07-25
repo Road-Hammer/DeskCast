@@ -19,10 +19,14 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from .pipeline import run_pipeline
+from .pipeline import plan_only, run_pipeline
 from .slides import VisualMode
 
-app = typer.Typer(add_completion=False, no_args_is_help=True, help="DeskCast — document → dual-host desk-cast video")
+app = typer.Typer(
+    add_completion=False,
+    no_args_is_help=True,
+    help="DeskCast — document → dual-host desk-cast video (STWL)",
+)
 console = Console()
 
 
@@ -31,34 +35,26 @@ def run(
     source: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
     title: Optional[str] = typer.Option(None, "--title", "-t"),
     out: Path = typer.Option(Path("out"), "--out", "-o", help="Output root directory"),
-    max_chunks: int = typer.Option(10, "--max-chunks", min=2, max=40),
-    no_llm: bool = typer.Option(False, "--no-llm", help="Force heuristic script (fastest on weak laptops)"),
+    max_chunks: int = typer.Option(24, "--max-chunks", min=2, max=40),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Force heuristic script"),
     ollama_model: str = typer.Option("llama3.2:1b", "--ollama-model"),
-    voice_a: str = typer.Option("en-US-GuyNeural", "--voice-a", help="Play-by-play edge-tts voice"),
-    voice_b: str = typer.Option("en-US-JennyNeural", "--voice-b", help="Color edge-tts voice"),
-    offline_tts: bool = typer.Option(False, "--offline-tts", help="Use pyttsx3 only"),
-    visuals: str = typer.Option(
-        "characters",
-        "--visuals",
-        "-v",
-        help="slides | characters | hybrid (characters + b-roll folder)",
-    ),
-    broll: Optional[Path] = typer.Option(
-        None,
-        "--broll",
-        help="Folder of images for hybrid B-roll (default: assets/broll)",
-    ),
-    assets: Optional[Path] = typer.Option(
-        None,
-        "--assets",
-        help="Assets root (hosts/, set/, broll/). Default: project assets/",
+    voice_a: str = typer.Option("en-US-GuyNeural", "--voice-a"),
+    voice_b: str = typer.Option("en-US-JennyNeural", "--voice-b"),
+    offline_tts: bool = typer.Option(False, "--offline-tts"),
+    visuals: str = typer.Option("characters", "--visuals", "-v"),
+    broll: Optional[Path] = typer.Option(None, "--broll"),
+    assets: Optional[Path] = typer.Option(None, "--assets"),
+    legal: bool = typer.Option(True, "--legal/--no-legal", help="Legal structure + episode planner"),
+    episode_minutes: float = typer.Option(20.0, "--episode-minutes", min=5.0, max=120.0),
+    multi_episode: bool = typer.Option(
+        True, "--multi-episode/--single-episode", help="Split long legal docs into episodes"
     ),
 ) -> None:
-    """Build a desk-cast MP4 from a PDF/DOCX/TXT/MD document."""
+    """Build desk-cast MP4(s) from a PDF/DOCX/TXT/MD document."""
     mode = visuals.lower().strip()
     if mode not in ("slides", "characters", "hybrid"):
         raise typer.BadParameter("visuals must be slides, characters, or hybrid")
-    mp4 = run_pipeline(
+    job = run_pipeline(
         source,
         out_root=out,
         title=title,
@@ -71,13 +67,46 @@ def run(
         visuals=mode,  # type: ignore[arg-type]
         broll_dir=broll,
         assets_dir=assets,
+        legal_mode=legal,
+        episode_minutes=episode_minutes,
+        multi_episode=multi_episode,
     )
-    console.print(f"[bold]Video:[/bold] {mp4}")
+    console.print(f"[bold]Job:[/bold] {job}")
+
+
+@app.command("plan")
+def plan_cmd(
+    source: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    title: Optional[str] = typer.Option(None, "--title", "-t"),
+    out: Path = typer.Option(Path("out") / "plans", "--out", "-o"),
+    episode_minutes: float = typer.Option(20.0, "--episode-minutes", min=5.0, max=120.0),
+) -> None:
+    """Parse legal structure and write an episode plan (no video)."""
+    doc, plan, dest = plan_only(
+        source, title=title, out_dir=out, episode_minutes=episode_minutes
+    )
+    console.print(f"[bold]Profile:[/bold] {doc.profile}")
+    console.print(f"[bold]Sections:[/bold] {doc.section_count}  words≈{doc.total_words}")
+    console.print(f"[bold]Episodes:[/bold] {plan.total_episodes} (~{episode_minutes}m target)")
+    for ep in plan.episodes:
+        console.print(
+            f"  {ep.id}: {ep.title}  packs={ep.pack_end - ep.pack_start}  "
+            f"words={ep.word_count}  ~{ep.estimated_minutes}m"
+        )
+    console.print(f"[bold]Wrote:[/bold] {dest}")
+
+
+@app.command()
+def ui() -> None:
+    """Launch the DeskCast desktop UI."""
+    from .ui import main as ui_main
+
+    ui_main()
 
 
 @app.command("init-assets")
 def init_assets(
-    assets: Path = typer.Option(Path("assets"), "--assets", help="Where to write host/desk assets"),
+    assets: Path = typer.Option(Path("assets"), "--assets"),
 ) -> None:
     """Generate default Mike/Dana portraits and desk background."""
     from .characters import ensure_default_hosts
@@ -85,7 +114,6 @@ def init_assets(
     paths = ensure_default_hosts(assets.resolve())
     for k, p in paths.items():
         console.print(f"[green]{k}[/green] → {p}")
-    console.print("Drop your own PNGs over mike_pbp.png / dana_color.png anytime.")
 
 
 @app.command("version")

@@ -68,3 +68,68 @@ class Outline(BaseModel):
     chunks: list[Chunk]
     total_words: int
     doc_kind: DocKind | None = None
+
+
+# --- Legal structure / multi-episode planning ---
+
+LegalKind = Literal[
+    "preamble",
+    "title",
+    "article",
+    "chapter",
+    "section",
+    "subsection",
+    "schedule",
+    "appendix",
+    "exhibit",
+    "other",
+]
+LegalProfile = Literal["contract", "legislation", "general"]
+
+
+class LegalNode(BaseModel):
+    id: str
+    kind: str
+    label: str
+    title: str
+    text: str = ""
+    word_count: int = 0
+    level: int = 0
+    is_amendment: bool = False
+    children: list["LegalNode"] = Field(default_factory=list)
+
+
+class LegalDocument(BaseModel):
+    source: str
+    title: str
+    profile: LegalProfile = "general"
+    nodes: list[LegalNode] = Field(default_factory=list)
+    total_words: int = 0
+    section_count: int = 0
+
+
+class EpisodeSpec(BaseModel):
+    index: int
+    id: str
+    title: str
+    section_titles: list[str] = Field(default_factory=list)
+    word_count: int = 0
+    estimated_minutes: float = 0.0
+    pack_start: int = 0
+    pack_end: int = 0  # exclusive index into flat packs
+    priority_focus: list[str] = Field(default_factory=list)
+
+
+class EpisodePlan(BaseModel):
+    source: str
+    title: str
+    profile: LegalProfile = "general"
+    target_minutes: float = 20.0
+    words_per_minute: int = 140
+    total_words: int = 0
+    total_episodes: int = 0
+    episodes: list[EpisodeSpec] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+LegalNode.model_rebuild()

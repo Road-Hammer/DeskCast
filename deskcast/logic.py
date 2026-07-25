@@ -62,6 +62,32 @@ _CONTRACT = {
     "whereas",
     "termination",
     "governing law",
+    "addendum",
+    "schedule",
+    "appendix",
+    "exhibit",
+    "obligation",
+    "obligations",
+    "contractor",
+    "client",
+    "covenant",
+    "breach",
+    "remedies",
+    "consideration",
+    "precedence",
+    "continuance",
+    "continuity",
+    "intellectual property",
+    "confidential",
+    "representation",
+    "warranty",
+    "severability",
+    "assignment",
+    "notice",
+    "effective date",
+    "board authorization",
+    "special project",
+    "invoice",
 }
 _OPS = {
     "t-minus",
@@ -84,9 +110,19 @@ _WARN = {
     "never",
     "do not",
     "must not",
+    "shall not",
+    "may not",
     "risk",
     "failure",
     "illegal",
+    "breach",
+    "default",
+    "penalty",
+    "indemnif",
+    "liability",
+    "terminate for cause",
+    "material breach",
+    "without limitation",
 }
 _PROC = {
     "step",
@@ -121,6 +157,8 @@ def detect_doc_kind(title: str, text: str) -> DocKind:
     # study guide strong signals in filename/title
     if re.search(r"study\s*guide|exam|cert|comptia|ccna|network\+|a\+", title.lower()):
         scores["study_guide"] += 5
+    if re.search(r"addendum|agreement|contract|msa|sow|continuity|indemnif", title.lower()):
+        scores["contract"] += 6
     best = max(scores, key=scores.get)
     if scores[best] < 2:
         return "general"
@@ -137,21 +175,39 @@ def classify_chunk(text: str, title: str = "") -> ChunkKind:
     ):
         return "qa"
 
-    # Bullet / numbered lists
-    bulletish = sum(1 for ln in lines if re.match(r"^(\-|\*|\u2022|\d+[\).])\s+", ln))
-    if bulletish >= 3 or (bulletish >= 2 and len(lines) <= 12):
+    # Bullet / numbered lists (including 0.1 / 1.2 style contract subsections)
+    bulletish = sum(
+        1
+        for ln in lines
+        if re.match(r"^(\-|\*|\u2022|\d+[\).]|[a-z][\).]|\d+\.\d+)\s+", ln, re.I)
+    )
+    if bulletish >= 3 or (bulletish >= 2 and len(lines) <= 14):
         return "list"
 
-    if _score(t, _WARN) >= 2:
-        return "warning"
+    # Contract risk / restriction language
+    if _score(t, _WARN) >= 2 or re.search(
+        r"\b(shall not|must not|may not|liable for|indemnif|material breach|terminate)\b", t
+    ):
+        if _score(t, _WARN) >= 1 or "shall not" in t or "must not" in t:
+            return "warning"
+
+    # Definitions / interpretations
+    if re.search(
+        r"\b(means|for purposes of|as used herein|defined terms?|interpretation)\b", t
+    ) and (len(text.split()) < 160 or "means" in t):
+        return "definition"
+
     if _score(t, _PROC) >= 2 or re.search(r"step\s+\d+", t):
         return "procedure"
     if re.search(r"\bfor example\b|\be\.g\.\b|\bsuch as\b", t) and len(text.split()) < 120:
         return "example"
     if _score(t, _DEF) >= 1 and len(text.split()) < 100:
         return "definition"
-    if re.search(r"\b(summary|in conclusion|key takeaway|remember)\b", t):
+    if re.search(r"\b(summary|in conclusion|key takeaway|remember|recitals)\b", t):
         return "summary"
+    # Operative shall/must without warning → treat as procedure/obligation path
+    if re.search(r"\b(shall|must|is required to|agrees to)\b", t) and len(text.split()) < 220:
+        return "procedure"
     return "narrative"
 
 
@@ -207,8 +263,11 @@ def _rules_for_doc(doc_kind: str) -> list[str]:
             "Open teases real high-yield titles",
         ],
         "contract": [
-            "Flag obligations (shall/must)",
-            "Color highlights risk and ambiguity",
+            "Skip NDA/header noise; voice operative clauses only",
+            "Flag obligations (shall/must) and restrictions (shall not)",
+            "Color highlights risk, liability, precedence, and ambiguity",
+            "Name each Article/Section title so the walkthrough is a full sheet, not a skim",
+            "Surface schedules/appendices and money/IP/authority terms",
         ],
         "ops_brief": [
             "Timeline language for procedures",
@@ -244,6 +303,11 @@ def _priority(kind: ChunkKind, text: str) -> int:
     # boost if dense numbers / ports / acronyms (tech study guides)
     if re.search(r"\b\d{1,5}\b", text) and re.search(r"\b[A-Z]{2,6}\b", text):
         base = min(10, base + 1)
+    # boost hard obligation / restriction language
+    if re.search(r"(?i)\b(shall not|must not|material breach|indemnif|order of precedence)\b", text):
+        base = min(10, base + 2)
+    elif re.search(r"(?i)\b(shall|must|agrees to)\b", text):
+        base = min(10, base + 1)
     return base
 
 
@@ -271,7 +335,9 @@ def pick_pbp_line(
     nxt: Chunk | None = None,
 ) -> str:
     """Play-by-play line with position-aware transitions (smoother desk flow)."""
-    blurb = _clip(ch.text, 42)
+    # Self-contained: longer blurb so the audio carries the clause, not just a pointer
+    blurb_n = 70 if doc_kind == "contract" else 42
+    blurb = _clip(ch.text, blurb_n)
     title = _clean_title(ch.title)
     kind = ch.kind or "narrative"
     bridge = _bridge_in(i, total, prev, ch, doc_kind)
@@ -292,14 +358,15 @@ def pick_color_line(
     prev: Chunk | None = None,
 ) -> str:
     """Color line that answers Mike, then optionally tees the next package."""
-    key = _key_sentences(ch.text, 2)
+    key_n = 3 if doc_kind == "contract" else 2
+    key = _key_sentences(ch.text, key_n)
     kind = ch.kind or "narrative"
     tags = [t for t in (ch.tags or []) if t not in (kind,) and not t.startswith("n:")][:2]
     tag_bit = f" Keep an eye on {', '.join(tags)}." if tags else ""
 
     body = _color_core(kind, key, doc_kind, tag_bit, ch)
     # Soft transition out → next title (smoother than hard package cuts)
-    if nxt is not None and i < total - 1:
+    if nxt is not None and i < total - 1 and doc_kind != "contract":
         nt = _clean_title(nxt.title)
         nk = nxt.kind or "narrative"
         if (ch.priority or 0) >= 8:
@@ -308,7 +375,31 @@ def pick_color_line(
             body += f" And Mike, coming up we've got a caution flag on {nt}."
         elif i % 3 == 1:
             body += f" From here, we ease into {nt}."
+    elif nxt is not None and i < total - 1 and doc_kind == "contract" and i % 4 == 0:
+        # Sparse next-title cues only — keep airtime on the clause itself
+        body += f" Next package: {_clean_title(nxt.title)}."
     return body
+
+
+def pick_readthrough_line(ch: Chunk, doc_kind: str) -> str | None:
+    """
+    Extra self-contained beat: read operative text on air so the cast
+    stands alone without the PDF open.
+    """
+    if doc_kind != "contract":
+        return None
+    if (ch.priority or 0) < 7 and (ch.kind or "") not in ("warning", "procedure", "definition"):
+        return None
+    quote = _best_readthrough(ch.text, max_words=95)
+    if not quote or len(quote.split()) < 12:
+        return None
+    title = _clean_title(ch.title)
+    leads = [
+        f"On the instrument, under {title}: {quote}",
+        f"Reading the controlling language on {title}: {quote}",
+        f"Plain text from the sheet — {title}: {quote}",
+    ]
+    return leads[ch.index % len(leads)]
 
 
 def _bridge_in(
@@ -377,9 +468,15 @@ def _pbp_core(kind: str, title: str, blurb: str, doc_kind: str, i: int, total: i
         return by_kind.get(kind, by_kind["narrative"])
 
     if doc_kind == "contract":
-        if kind == "warning":
-            return f"{num}risk language in {title}. Listen close: {blurb}"
-        return f"{num}{title}. On the page: {blurb}"
+        by_kind = {
+            "warning": f"{num}restriction / risk — {title}. Listen close: {blurb}",
+            "procedure": f"{num}operative duty — {title}. Who must do what: {blurb}",
+            "definition": f"{num}defined terms — {title}. Precision matters: {blurb}",
+            "list": f"{num}clause stack — {title}. Points on the page: {blurb}",
+            "summary": f"{num}controlling summary — {title}. {blurb}",
+            "narrative": f"{num}{title}. On the sheet: {blurb}",
+        }
+        return by_kind.get(kind, by_kind["narrative"])
 
     if doc_kind == "ops_brief":
         if kind == "procedure":
@@ -420,7 +517,17 @@ def _color_core(kind: str, key: str, doc_kind: str, tag_bit: str, ch: Chunk) -> 
         return by_kind.get(kind, by_kind["narrative"])
 
     if doc_kind == "contract":
-        return f"{lead}obligation and risk live here — {key} Ambiguity is where disputes start.{tag_bit}"
+        shall = _obligation_pull(ch.text)
+        core = shall or key
+        by_kind = {
+            "warning": f"{lead}this is where a deal goes sideways if ignored — {core}{tag_bit}",
+            "procedure": f"{lead}duty language: {core} If the actor or deadline is fuzzy, fix it in writing.{tag_bit}",
+            "definition": f"{lead}definitions control the rest of the instrument — {core}{tag_bit}",
+            "list": f"{lead}walk the list; each item is a separate hook: {core}{tag_bit}",
+            "summary": f"{lead}if you remember one control from this pack: {core}{tag_bit}",
+            "narrative": f"{lead}{core} Ambiguity is where disputes start.{tag_bit}",
+        }
+        return by_kind.get(kind, by_kind["narrative"])
 
     if doc_kind == "ops_brief":
         if kind == "warning":
@@ -436,8 +543,10 @@ def cold_open_lines(outline: Outline) -> tuple[str, str]:
     dk = outline.doc_kind or "general"
     n = len(outline.chunks)
     w = outline.total_words
-    highs = [c for c in outline.chunks if (c.priority or 0) >= 7]
-    high_n = len(highs)
+    highs = [c for c in outline.chunks if (c.priority or 0) >= 7 and _is_substantive_title(c.title)]
+    if not highs:
+        highs = [c for c in outline.chunks if _is_substantive_title(c.title)][:4]
+    high_n = len([c for c in outline.chunks if (c.priority or 0) >= 7])
     # Tease 1–2 real titles for a smoother runway into package 1
     teases = [_clean_title(c.title) for c in highs[:2]]
     tease = ""
@@ -456,11 +565,15 @@ def cold_open_lines(outline: Outline) -> tuple[str, str]:
         )
     elif dk == "contract":
         pbp = (
-            f"Welcome in — legal-pad energy. We're walking '{outline.title}' "
-            f"like a two-minute drill on the clauses that actually bite."
+            f"Welcome in — contract desk is live. This cast is self-contained: "
+            f"we read the operative language on air so you can follow '{outline.title}' "
+            f"without the PDF open. Full sheet walk — duties, restrictions, money, "
+            f"authority, IP, schedules. NDA page banners stay off the mic."
         )
         color = (
-            f"{n} packages on the sheet.{tease} I'll flag obligation, liability, and anything fuzzy."
+            f"{n} packages, about {w} words of body text on the board.{tease} "
+            f"I'll pull shall/must, shall-not, precedence, and liability out loud — "
+            f"not as a skim, as a working read."
         )
     elif dk == "ops_brief":
         pbp = (
@@ -498,9 +611,13 @@ def close_lines(outline: Outline) -> tuple[str, str]:
         )
     elif dk == "contract":
         color = (
-            f"Closing thought:{recap} If a clause is unclear, it fails on the worst day. Clarify before you sign."
+            f"Closing thought:{recap} Map every shall and shall-not to an owner. "
+            f"If a clause is unclear, it fails on the worst day — clarify before execution."
         )
-        pbp = f"Desk is clear on '{outline.title}'. Document it — don't assume it. See you next review."
+        pbp = (
+            f"Desk is clear on '{outline.title}'. Full-sheet walk, not a skim. "
+            f"Document exceptions; don't assume them. See you on the next review."
+        )
     elif dk == "ops_brief":
         color = f"Final color:{recap} Verify, then move. Hope is not a timeline."
         pbp = f"Ops desk out on '{outline.title}'. Stay clean out there."
@@ -555,13 +672,110 @@ def _key_sentences(text: str, n: int = 2) -> str:
     parts = [p.strip() for p in parts if len(p.split()) > 5]
     if not parts:
         return _clip(text, 40)
-    # Prefer mid-length informative sentences; avoid near-duplicates
-    scored = sorted(parts, key=lambda s: abs(len(s.split()) - 16))
+    # Prefer obligation / restriction sentences, then mid-length informative
+    def score(s: str) -> float:
+        sl = s.lower()
+        boost = 0.0
+        if re.search(r"\b(shall not|must not|may not)\b", sl):
+            boost -= 8
+        elif re.search(r"\b(shall|must|agrees to|is required)\b", sl):
+            boost -= 5
+        if re.search(r"\b(liability|indemnif|terminate|breach|precedence)\b", sl):
+            boost -= 3
+        # Prefer ~12–28 words
+        return abs(len(s.split()) - 18) + boost
+
+    scored = sorted(parts, key=score)
     picked: list[str] = []
     for s in scored:
         if any(s[:40] == p[:40] for p in picked):
             continue
+        # Skip pure confidentiality banner leftovers
+        if re.search(r"(?i)nda restrictions|confidential\s*-\s*nda", s):
+            continue
         picked.append(s)
         if len(picked) >= n:
             break
-    return " ".join(picked)
+    return " ".join(picked) if picked else _clip(text, 40)
+
+
+def _obligation_pull(text: str) -> str | None:
+    """Pull one sharp shall/must line for contract color."""
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    for p in parts:
+        if len(p.split()) < 8 or len(p.split()) > 55:
+            continue
+        if re.search(r"(?i)\b(shall not|must not|may not|shall|must|agrees to)\b", p):
+            if re.search(r"(?i)nda restrictions|confidential\s*-\s*nda", p):
+                continue
+            return p.strip()
+    return None
+
+
+def _best_readthrough(text: str, max_words: int = 95) -> str:
+    """Best contiguous operative span for on-air read (self-contained cast)."""
+    # Prefer multi-sentence block packed with obligations
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    parts = [p.strip() for p in parts if len(p.split()) >= 6]
+    if not parts:
+        return _clip(text, max_words)
+
+    def oper_score(s: str) -> int:
+        sl = s.lower()
+        n = 0
+        for k in (
+            "shall not",
+            "must not",
+            "shall",
+            "must",
+            "agrees",
+            "liable",
+            "indemnif",
+            "license",
+            "ownership",
+            "payment",
+            "authority",
+            "precedence",
+            "terminate",
+            "breach",
+            "contractor",
+            "organization",
+        ):
+            if k in sl:
+                n += 2 if "shall" in k or "must" in k else 1
+        if re.search(r"(?i)nda restrictions|confidential\s*-\s*nda|click or tap", s):
+            n -= 10
+        return n
+
+    # Greedy window of 1–3 sentences with best score under max_words
+    best = ""
+    best_sc = -99
+    for i in range(len(parts)):
+        acc: list[str] = []
+        for j in range(i, min(i + 3, len(parts))):
+            acc.append(parts[j])
+            blob = " ".join(acc)
+            if len(blob.split()) > max_words:
+                break
+            sc = sum(oper_score(x) for x in acc) + min(3, len(acc))
+            if sc > best_sc:
+                best_sc = sc
+                best = blob
+    if not best:
+        return _clip(text, max_words)
+    # Clean whitespace / hyphenation from PDF extract
+    best = re.sub(r"\s+", " ", best).strip()
+    best = re.sub(r"(\w)-\s+(\w)", r"\1\2", best)
+    return best
+
+
+def _is_substantive_title(title: str) -> bool:
+    t = title or ""
+    if re.search(r"(?i)\b(article|schedule|appendix|exhibit|section)\b", t):
+        return True
+    if re.match(r"^\d+\.\d+", t.strip()):
+        return True
+    # Reject header fragments
+    if re.search(r"(?i)obligations apply|nda|confidential|page \d+", t):
+        return False
+    return len(t.split()) >= 4

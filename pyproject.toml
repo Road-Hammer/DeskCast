@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 deskcast = "deskcast.cli:app"
+deskcast-ui = "deskcast.ui:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

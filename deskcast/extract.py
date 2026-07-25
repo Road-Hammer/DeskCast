@@ -61,5 +61,66 @@ def _from_docx(path: Path) -> str:
 def _normalize(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
+    text = _strip_boilerplate(text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+# Repeated header/footer / form junk that drowns operative clauses in legal PDFs
+_BOILER_LINE = re.compile(
+    r"(?i)^("
+    r"confidential(\s*[-–—|].*)?|"
+    r"nda(\s+confidential.*)?|"
+    r"non-disclosure.*|"
+    r"proprietary\s*[-–—].*restricted|"
+    r".*nda restrictions apply.*|"
+    r".*page\s+\d+\s+of\s+\d+.*|"
+    r"rc\d+(\.\d+)?\s*\|?\s*page.*"
+    r")$"
+)
+_BOILER_CONTAINS = re.compile(
+    r"(?i)("
+    r"confidential\s*[-–—]\s*nda|"
+    r"nda restrictions apply|"
+    r"non-disclosure,\s*non-use|"
+    r"limited-distribution\s+obligations\s+apply|"
+    r"obligations\s+apply\s*$|"
+    r"this document contains confidential|"
+    r"click or tap here to (sign|enter)|"
+    r"^signature\s*$|"
+    r"^date\s*:?\s*$|"
+    r"^printed name\s*/?\s*title\s*:?\s*$|"
+    r"^_{5,}$|"
+    r"^date click or tap"
+    r")"
+)
+
+
+def _strip_boilerplate(text: str) -> str:
+    """Drop repeating NDA banners, page footers, and empty signature shells."""
+    kept: list[str] = []
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            kept.append("")
+            continue
+        if _BOILER_LINE.match(line):
+            continue
+        if _BOILER_CONTAINS.search(line) and len(line.split()) <= 18:
+            continue
+        # Pure TOC leader junk
+        if re.fullmatch(r"[\.\s\d]+", line):
+            continue
+        kept.append(line)
+    # Collapse runs of blanks
+    out: list[str] = []
+    blank = 0
+    for ln in kept:
+        if not ln:
+            blank += 1
+            if blank <= 1:
+                out.append("")
+            continue
+        blank = 0
+        out.append(ln)
+    return "\n".join(out).strip()
