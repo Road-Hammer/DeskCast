@@ -333,6 +333,7 @@ def pick_pbp_line(
     *,
     prev: Chunk | None = None,
     nxt: Chunk | None = None,
+    desk_style: str = "sports",
 ) -> str:
     """Play-by-play line with position-aware transitions (smoother desk flow)."""
     # Self-contained: longer blurb so the audio carries the clause, not just a pointer
@@ -340,10 +341,14 @@ def pick_pbp_line(
     blurb = _clip(ch.text, blurb_n)
     title = _clean_title(ch.title)
     kind = ch.kind or "narrative"
-    bridge = _bridge_in(i, total, prev, ch, doc_kind)
-    core = _pbp_core(kind, title, blurb, doc_kind, i, total)
+    bridge = _bridge_in(i, total, prev, ch, doc_kind, desk_style=desk_style)
+    core = _pbp_core(kind, title, blurb, doc_kind, i, total, desk_style=desk_style)
     # Light handoff cue only mid-pack — not every line
     if i < total - 1 and kind in ("definition", "list", "procedure") and i % 2 == 0:
+        if desk_style == "clear_channel":
+            return f"{bridge}{core} Dale — take the road read."
+        if desk_style == "night_watch":
+            return f"{bridge}{core} Dana — hold the light on this one."
         return f"{bridge}{core} Dana — take the color."
     return f"{bridge}{core}"
 
@@ -356,15 +361,16 @@ def pick_color_line(
     total: int = 1,
     nxt: Chunk | None = None,
     prev: Chunk | None = None,
+    desk_style: str = "sports",
 ) -> str:
-    """Color line that answers Mike, then optionally tees the next package."""
+    """Color line that answers the lead host, then optionally tees the next package."""
     key_n = 3 if doc_kind == "contract" else 2
     key = _key_sentences(ch.text, key_n)
     kind = ch.kind or "narrative"
     tags = [t for t in (ch.tags or []) if t not in (kind,) and not t.startswith("n:")][:2]
     tag_bit = f" Keep an eye on {', '.join(tags)}." if tags else ""
 
-    body = _color_core(kind, key, doc_kind, tag_bit, ch)
+    body = _color_core(kind, key, doc_kind, tag_bit, ch, desk_style=desk_style)
     # Soft transition out → next title (smoother than hard package cuts)
     if nxt is not None and i < total - 1 and doc_kind != "contract":
         nt = _clean_title(nxt.title)
@@ -372,16 +378,24 @@ def pick_color_line(
         if (ch.priority or 0) >= 8:
             body += f" Hold that — next we slide into {nt}."
         elif nk == "warning":
-            body += f" And Mike, coming up we've got a caution flag on {nt}."
+            if desk_style == "clear_channel":
+                body += f" And Bo, next up we've got a yellow on {nt}."
+            else:
+                body += f" And Mike, coming up we've got a caution flag on {nt}."
         elif i % 3 == 1:
             body += f" From here, we ease into {nt}."
     elif nxt is not None and i < total - 1 and doc_kind == "contract" and i % 4 == 0:
         # Sparse next-title cues only — keep airtime on the clause itself
-        body += f" Next package: {_clean_title(nxt.title)}."
+        if desk_style == "clear_channel":
+            body += f" Down the road a piece: {_clean_title(nxt.title)}."
+        else:
+            body += f" Next package: {_clean_title(nxt.title)}."
     return body
 
 
-def pick_readthrough_line(ch: Chunk, doc_kind: str) -> str | None:
+def pick_readthrough_line(
+    ch: Chunk, doc_kind: str, *, desk_style: str = "sports"
+) -> str | None:
     """
     Extra self-contained beat: read operative text on air so the cast
     stands alone without the PDF open.
@@ -394,11 +408,24 @@ def pick_readthrough_line(ch: Chunk, doc_kind: str) -> str | None:
     if not quote or len(quote.split()) < 12:
         return None
     title = _clean_title(ch.title)
-    leads = [
-        f"On the instrument, under {title}: {quote}",
-        f"Reading the controlling language on {title}: {quote}",
-        f"Plain text from the sheet — {title}: {quote}",
-    ]
+    if desk_style == "clear_channel":
+        leads = [
+            f"Straight off the page, under {title}: {quote}",
+            f"Here's the controlling language on {title}, no varnish: {quote}",
+            f"Listen close — {title}: {quote}",
+        ]
+    elif desk_style == "night_watch":
+        leads = [
+            f"The instrument itself, under {title}: {quote}",
+            f"In the quiet, the text says this — {title}: {quote}",
+            f"Reading the operative line on {title}: {quote}",
+        ]
+    else:
+        leads = [
+            f"On the instrument, under {title}: {quote}",
+            f"Reading the controlling language on {title}: {quote}",
+            f"Plain text from the sheet — {title}: {quote}",
+        ]
     return leads[ch.index % len(leads)]
 
 
@@ -408,9 +435,39 @@ def _bridge_in(
     prev: Chunk | None,
     ch: Chunk,
     doc_kind: str,
+    *,
+    desk_style: str = "sports",
 ) -> str:
     """Opening connector so packages don't all start the same way."""
     kind = ch.kind or "narrative"
+    if desk_style == "clear_channel":
+        if i == 0:
+            openers = [
+                "First marker on the map — ",
+                "We roll out with ",
+                "Lead stretch: ",
+            ]
+            return openers[i % len(openers)]
+        if i == total - 1:
+            return "Last stretch before we park it — "
+        openers = [
+            "Next mile marker — ",
+            "Keep it in gear for ",
+            "Along the board now: ",
+            "Still rolling — ",
+        ]
+        return openers[i % len(openers)]
+    if desk_style == "night_watch":
+        if i == 0:
+            return "We begin in the quiet with "
+        if i == total - 1:
+            return "Final package before we close the room — "
+        openers = [
+            "Another layer — ",
+            "Stay with me for ",
+            "Now the text shifts to ",
+        ]
+        return openers[i % len(openers)]
     if i == 0:
         openers = [
             "We open the board with ",
@@ -449,10 +506,46 @@ def _bridge_in(
     return "Next, "
 
 
-def _pbp_core(kind: str, title: str, blurb: str, doc_kind: str, i: int, total: int) -> str:
+def _pbp_core(
+    kind: str,
+    title: str,
+    blurb: str,
+    doc_kind: str,
+    i: int,
+    total: int,
+    *,
+    desk_style: str = "sports",
+) -> str:
     # Only stamp package numbers occasionally (first, last, every 3rd) for less robot cadence
     stamp = (i == 0) or (i == total - 1) or (i % 3 == 0)
-    num = f"(pack {i + 1} of {total}) " if stamp else ""
+    if desk_style == "clear_channel":
+        num = f"package {i + 1} of {total}, " if stamp else ""
+    elif desk_style == "night_watch":
+        num = f"layer {i + 1} of {total}. " if stamp else ""
+    else:
+        num = f"(pack {i + 1} of {total}) " if stamp else ""
+
+    if desk_style == "clear_channel" and doc_kind == "contract":
+        by_kind = {
+            "warning": f"{num}watch this fence line — {title}. {blurb}",
+            "procedure": f"{num}who owes what on {title}: {blurb}",
+            "definition": f"{num}words that steer the whole sheet — {title}. {blurb}",
+            "list": f"{num}stack of hooks under {title}: {blurb}",
+            "summary": f"{num}pull it together on {title}. {blurb}",
+            "narrative": f"{num}{title}. On the sheet: {blurb}",
+        }
+        return by_kind.get(kind, by_kind["narrative"])
+
+    if desk_style == "night_watch" and doc_kind == "contract":
+        by_kind = {
+            "warning": f"{num}this one has teeth — {title}. {blurb}",
+            "procedure": f"{num}duty under {title}: {blurb}",
+            "definition": f"{num}defined carefully — {title}. {blurb}",
+            "list": f"{num}several strands under {title}: {blurb}",
+            "summary": f"{num}{title}. {blurb}",
+            "narrative": f"{num}{title}. The text says: {blurb}",
+        }
+        return by_kind.get(kind, by_kind["narrative"])
 
     if doc_kind == "study_guide":
         by_kind = {
@@ -492,15 +585,40 @@ def _pbp_core(kind: str, title: str, blurb: str, doc_kind: str, i: int, total: i
     return f"{num}{title}. Here's the drive: {blurb}"
 
 
-def _color_core(kind: str, key: str, doc_kind: str, tag_bit: str, ch: Chunk) -> str:
+def _color_core(
+    kind: str,
+    key: str,
+    doc_kind: str,
+    tag_bit: str,
+    ch: Chunk,
+    *,
+    desk_style: str = "sports",
+) -> str:
     # Rotate phrase starters so every color line doesn't sound identical
-    soft = [
-        "Yeah — ",
-        "Exactly — ",
-        "And the nuance is ",
-        "Here's the color: ",
-        "What I'd underline: ",
-    ]
+    if desk_style == "clear_channel":
+        soft = [
+            "Plain talk — ",
+            "Here's the practical bite: ",
+            "What bites on the road: ",
+            "Don't miss this one — ",
+            "From the cab side: ",
+        ]
+    elif desk_style == "night_watch":
+        soft = [
+            "Steady now — ",
+            "Listen to the edge of it: ",
+            "What I'd keep in the dark: ",
+            "Ground it here: ",
+            "The risk under that: ",
+        ]
+    else:
+        soft = [
+            "Yeah — ",
+            "Exactly — ",
+            "And the nuance is ",
+            "Here's the color: ",
+            "What I'd underline: ",
+        ]
     lead = soft[ch.index % len(soft)]
 
     if doc_kind == "study_guide":
@@ -519,6 +637,16 @@ def _color_core(kind: str, key: str, doc_kind: str, tag_bit: str, ch: Chunk) -> 
     if doc_kind == "contract":
         shall = _obligation_pull(ch.text)
         core = shall or key
+        if desk_style == "clear_channel":
+            by_kind = {
+                "warning": f"{lead}if you ignore this, the deal goes sideways — {core}{tag_bit}",
+                "procedure": f"{lead}someone has to own this: {core} Fuzzy deadline? Get it in writing.{tag_bit}",
+                "definition": f"{lead}these words steer everything after them — {core}{tag_bit}",
+                "list": f"{lead}walk each hook one at a time: {core}{tag_bit}",
+                "summary": f"{lead}one control to keep in the pocket: {core}{tag_bit}",
+                "narrative": f"{lead}{core} Fuzzy language is where the argument starts.{tag_bit}",
+            }
+            return by_kind.get(kind, by_kind["narrative"])
         by_kind = {
             "warning": f"{lead}this is where a deal goes sideways if ignored — {core}{tag_bit}",
             "procedure": f"{lead}duty language: {core} If the actor or deadline is fuzzy, fix it in writing.{tag_bit}",
@@ -539,7 +667,11 @@ def _color_core(kind: str, key: str, doc_kind: str, tag_bit: str, ch: Chunk) -> 
     return f"{lead}{key} That's why this beat matters.{tag_bit}"
 
 
-def cold_open_lines(outline: Outline) -> tuple[str, str]:
+def cold_open_lines(
+    outline: Outline,
+    *,
+    desk_style: str = "sports",
+) -> tuple[str, str]:
     dk = outline.doc_kind or "general"
     n = len(outline.chunks)
     w = outline.total_words
@@ -552,6 +684,53 @@ def cold_open_lines(outline: Outline) -> tuple[str, str]:
     tease = ""
     if teases:
         tease = " We'll lean hard on " + (" and ".join(teases)) + "."
+
+    # Overnight clear-channel lane (Bo/Dale unofficial test)
+    if desk_style == "clear_channel":
+        if dk == "contract":
+            pbp = (
+                f"Good evening out there — wherever you're rolling. "
+                f"We've got '{outline.title}' on the board tonight: a self-contained walk, "
+                f"so you can follow along without the PDF on the seat beside you. "
+                f"{n} stretches of the instrument, real shall and shall-not language, "
+                f"no NDA wallpaper on the mic."
+            )
+            color = (
+                f"About {w} words of body text, {n} packages.{tease} "
+                f"I'll call the practical bites — fees that keep running, notices that have to land, "
+                f"what actually holds if someone tests the fence. You keep us steady, Bo."
+            )
+        else:
+            pbp = (
+                f"Night stretch is open. '{outline.title}' is our cargo for the next little while — "
+                f"{n} packages, easy pace, nothing rushed."
+            )
+            color = (
+                f"Roughly {w} words on the board.{tease} "
+                f"I'll flag the hard edges; you keep the lane warm."
+            )
+        return pbp, color
+
+    # Late-night watch lane (Art unofficial test)
+    if desk_style == "night_watch":
+        if dk == "contract":
+            pbp = (
+                f"It's late, the board is quiet, and the document has teeth. "
+                f"Tonight: '{outline.title}'. We read the operative language out loud — "
+                f"{n} packages — so nothing hides in the fine print while the room is still."
+            )
+            color = (
+                f"{w} words of body, {n} packs.{tease} "
+                f"I'll ground the risk: liability, precedence, what fails closed. "
+                f"You open the door, Art; I'll keep the flashlight steady."
+            )
+        else:
+            pbp = (
+                f"Night Watch is open. '{outline.title}' — {n} packages, "
+                f"slow enough to hear what the text is really saying."
+            )
+            color = f"About {w} words.{tease} Nuance and risk flags are mine."
+        return pbp, color
 
     if dk == "study_guide":
         pbp = (
@@ -592,13 +771,43 @@ def cold_open_lines(outline: Outline) -> tuple[str, str]:
     return pbp, color
 
 
-def close_lines(outline: Outline) -> tuple[str, str]:
+def close_lines(outline: Outline, *, desk_style: str = "sports") -> tuple[str, str]:
     dk = outline.doc_kind or "general"
     highs = [c for c in outline.chunks if (c.priority or 0) >= 7]
     recap = ""
     if highs:
         names = ", ".join(_clean_title(c.title) for c in highs[:3])
         recap = f" High-yield recap: {names}."
+
+    if desk_style == "clear_channel":
+        if dk == "contract":
+            color = (
+                f"Last word from the road side:{recap} Put a name on every shall and shall-not. "
+                f"If it's fuzzy, it fails on the worst night — fix it before you sign."
+            )
+            pbp = (
+                f"We're parking it on '{outline.title}'. Full-sheet walk, not a skim. "
+                f"Keep the exceptions written down. Safe miles — we'll catch you on the next stretch."
+            )
+        else:
+            color = f"Winding down:{recap} Keep the hard edges marked."
+            pbp = f"Clear channel out on '{outline.title}'. Appreciate you riding along."
+        return pbp, color
+
+    if desk_style == "night_watch":
+        if dk == "contract":
+            color = (
+                f"Before we kill the lights:{recap} Map every obligation to an owner. "
+                f"Ambiguity is where the bad night starts."
+            )
+            pbp = (
+                f"Night Watch closes on '{outline.title}'. The text is still there when you come back. "
+                f"Read it again in the daylight."
+            )
+        else:
+            color = f"Closing the room:{recap}"
+            pbp = f"That's Night Watch on '{outline.title}'. Stay curious — stay careful."
+        return pbp, color
 
     if dk == "study_guide":
         color = (

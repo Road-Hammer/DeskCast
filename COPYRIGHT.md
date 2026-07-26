@@ -37,6 +37,7 @@ This notice covers original project materials, including:
 | Third-party libraries | Their own licenses (`requirements.txt` / package metadata). |
 | FFmpeg, Tesseract, etc. | External tools; their licenses apply. |
 | Host portraits / desk stills | Confirm commercial-use rights for AI-generated or stock assets. |
+| Unofficial test personas (Bo, Dale, Art) | STWL working names for internal testing only — not licensed likenesses or real DJ brands. See `PERSONAS_UNOFFICIAL.md`. Do not use in public marketing until licensed or redesigned as original hosts. |
 | User documents fed into DeskCast | Remain owned by their respective owners. |
 
 ## Notice text

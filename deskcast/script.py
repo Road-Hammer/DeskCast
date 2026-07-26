@@ -19,6 +19,13 @@ from typing import Any
 
 import httpx
 
+from .hosts import (
+    DEFAULT_DESK_MODE,
+    DeskMode,
+    DeskModeId,
+    apply_host_names_to_script,
+    get_desk_mode,
+)
 from .logic import (
     cold_open_lines,
     close_lines,
@@ -29,6 +36,7 @@ from .logic import (
 )
 from .models import Line, Outline, Script
 
+# Canonical names used inside rule banks; remapped per desk mode at the end.
 PBP_NAME = "Mike"
 COLOR_NAME = "Dana"
 
@@ -40,23 +48,165 @@ def generate_script(
     ollama_model: str = "llama3.2:1b",
     openai_base: str | None = None,
     openai_key: str | None = None,
+    desk_mode: str | DeskModeId | DeskMode | None = None,
 ) -> Script:
-    if use_llm:
+    desk = desk_mode if isinstance(desk_mode, DeskMode) else get_desk_mode(desk_mode)
+    # Always start from rule logic (structure + obligations). LLM polishes speech.
+    base = apply_host_names_to_script(
+        _logic_script(outline, desk_style=desk.id), desk
+    )
+    if not use_llm:
+        return base
+
+    # 1) Prefer polish of the logic script (reliable with tiny models)
+    try:
+        polished = _llm_polish_script(
+            base, desk=desk, ollama_model=ollama_model,
+            openai_base=openai_base, openai_key=openai_key,
+        )
+        if polished:
+            return polished
+    except Exception:
+        pass
+
+    # 2) Fall back to full LLM generation from outline
+    try:
+        raw = _llm_script(outline, ollama_model, openai_base, openai_key, desk=desk)
+        if raw:
+            raw = raw.model_copy(update={"doc_kind": outline.doc_kind or "general"})
+            return apply_host_names_to_script(raw, desk)
+    except Exception:
+        pass
+    return base
+
+
+def _llm_polish_script(
+    script: Script,
+    *,
+    desk: DeskMode,
+    ollama_model: str,
+    openai_base: str | None,
+    openai_key: str | None,
+) -> Script | None:
+    """Rewrite line text for natural overnight delivery while keeping structure."""
+    lines = script.all_lines()
+    if not lines:
+        return None
+    # Cap payload size for 1B models — polish first N + close
+    payload = []
+    for i, ln in enumerate(lines):
+        payload.append(
+            {
+                "i": i,
+                "role": ln.role,
+                "speaker": ln.speaker,
+                "text": ln.text[:500],
+            }
+        )
+    system = (
+        f"You polish dual-host overnight radio copy for spoken delivery. "
+        f"Hosts: {desk.pbp.name} (lead) and {desk.color.name} (color). "
+        f"Style: {desk.style_hint} "
+        "Keep every speaker, role, and line index. Preserve shall/must/shall-not facts. "
+        "Make lines warm, conversational, contractions OK, short sentences. "
+        "Max ~40 words per line unless it is a direct read of operative contract text "
+        "(those may stay longer). No sports jargon unless the style says sports desk. "
+        "Return ONLY valid JSON: {\"lines\":[{\"i\":0,\"text\":\"...\"}, ...]} "
+        "with one entry per input line index."
+    )
+    user = json.dumps({"lines": payload}, ensure_ascii=False)
+    content = _chat_complete(
+        system, user, ollama_model, openai_base, openai_key, num_predict=2500
+    )
+    if not content:
+        return None
+    data = _parse_json_obj(content)
+    by_i: dict[int, str] = {}
+    for item in data.get("lines") or []:
         try:
-            raw = _llm_script(outline, ollama_model, openai_base, openai_key)
-            if raw:
-                raw.doc_kind = outline.doc_kind or "general"
-                return raw
+            idx = int(item.get("i"))
+            text = (item.get("text") or "").strip()
+            if text:
+                by_i[idx] = text
         except Exception:
-            pass
-    return _logic_script(outline)
+            continue
+    if len(by_i) < max(2, len(lines) // 3):
+        # Too few rewrites — treat as failure so we keep logic copy
+        return None
+
+    def polish_group(group: list[Line], offset: int) -> list[Line]:
+        out: list[Line] = []
+        for j, ln in enumerate(group):
+            idx = offset + j
+            text = by_i.get(idx, ln.text)
+            out.append(ln.model_copy(update={"text": text}))
+        return out
+
+    n_cold = len(script.cold_open)
+    n_seg = len(script.segments)
+    return Script(
+        title=script.title,
+        doc_kind=script.doc_kind,
+        cold_open=polish_group(script.cold_open, 0),
+        segments=polish_group(script.segments, n_cold),
+        close=polish_group(script.close, n_cold + n_seg),
+    )
 
 
-def _logic_script(outline: Outline) -> Script:
+def _chat_complete(
+    system: str,
+    user: str,
+    ollama_model: str,
+    openai_base: str | None,
+    openai_key: str | None,
+    *,
+    num_predict: int = 2000,
+) -> str | None:
+    content = None
+    try:
+        with httpx.Client(timeout=180.0) as client:
+            r = client.post(
+                "http://127.0.0.1:11434/api/chat",
+                json={
+                    "model": ollama_model,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "options": {"temperature": 0.55, "num_predict": num_predict},
+                },
+            )
+            if r.status_code == 200:
+                content = r.json()["message"]["content"]
+    except Exception:
+        content = None
+
+    if not content and openai_base:
+        headers = {"Authorization": f"Bearer {openai_key or 'sk-local'}"}
+        with httpx.Client(timeout=180.0, base_url=openai_base.rstrip("/")) as client:
+            r = client.post(
+                "/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": ollama_model,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "temperature": 0.55,
+                },
+            )
+            r.raise_for_status()
+            content = r.json()["choices"][0]["message"]["content"]
+    return content
+
+
+def _logic_script(outline: Outline, *, desk_style: str = "sports") -> Script:
     """Rule-based dual-host script with smoother transitions and fewer hard cuts."""
     dk = outline.doc_kind or "general"
-    pbp_open, color_open = cold_open_lines(outline)
-    pbp_close, color_close = close_lines(outline)
+    pbp_open, color_open = cold_open_lines(outline, desk_style=desk_style)
+    pbp_close, color_close = close_lines(outline, desk_style=desk_style)
 
     cold = [
         Line(role="pbp", speaker=PBP_NAME, text=pbp_open),
@@ -80,7 +230,9 @@ def _logic_script(outline: Outline) -> Script:
             Line(
                 role="pbp",
                 speaker=PBP_NAME,
-                text=pick_pbp_line(i, total, ch, dk, prev=prev, nxt=nxt),
+                text=pick_pbp_line(
+                    i, total, ch, dk, prev=prev, nxt=nxt, desk_style=desk_style
+                ),
                 chunk_index=ch.index,
                 chunk_kind=ch.kind,
             )
@@ -89,13 +241,21 @@ def _logic_script(outline: Outline) -> Script:
             Line(
                 role="color",
                 speaker=COLOR_NAME,
-                text=pick_color_line(ch, dk, i=i, total=total, nxt=nxt, prev=prev),
+                text=pick_color_line(
+                    ch,
+                    dk,
+                    i=i,
+                    total=total,
+                    nxt=nxt,
+                    prev=prev,
+                    desk_style=desk_style,
+                ),
                 chunk_index=ch.index,
                 chunk_kind=ch.kind,
             )
         )
         # Self-contained read-through so high-yield contract packs stand alone on audio
-        readthru = pick_readthrough_line(ch, dk)
+        readthru = pick_readthrough_line(ch, dk, desk_style=desk_style)
         if readthru:
             segments.append(
                 Line(
@@ -125,7 +285,11 @@ def _llm_script(
     ollama_model: str,
     openai_base: str | None,
     openai_key: str | None,
+    *,
+    desk: DeskMode | None = None,
 ) -> Script | None:
+    desk = desk or get_desk_mode(DEFAULT_DESK_MODE)
+    pbp_n, color_n = desk.pbp.name, desk.color.name
     payload_chunks = [
         {
             "index": c.index,
@@ -138,11 +302,18 @@ def _llm_script(
         for c in outline.chunks
     ]
     system = (
-        "You write dual-host sports-desk style commentary for document breakdowns. "
-        f"Hosts: {PBP_NAME} (play-by-play, tempo) and {COLOR_NAME} (color, nuance, exam/risk tips). "
+        f"You write dual-host desk commentary for document breakdowns. "
+        f"Style: {desk.style_hint} "
+        f"Hosts: {pbp_n} (play-by-play / lead, tempo) and {color_n} (color, nuance, exam/risk tips). "
+        f"Use speaker names exactly: {pbp_n} and {color_n}. "
         f"Document kind: {outline.doc_kind or 'general'}. "
+        "Write like real radio hosts talking to one listener — warm, spoken English, contractions, "
+        "short sentences, natural handoffs. NOT checklist robot voice. NOT sports jargon unless sports desk. "
+        "Each line 1–3 sentences, max ~45 words. Quote or paraphrase operative shall/must language. "
         "Respect chunk kinds: definition/list/warning/procedure/qa/example/summary/narrative. "
         "Warnings get urgency; study_guide gets exam-tip color. "
+        "cold_open: 2 lines (pbp then color). segments: alternate pbp/color per chunk. "
+        "close: 2 lines (color then pbp). "
         "Return ONLY valid JSON: cold_open, segments, close — lists of "
         "{role:'pbp'|'color', speaker, text, chunk_index?, chunk_kind?}."
     )
@@ -150,44 +321,9 @@ def _llm_script(
         {"title": outline.title, "doc_kind": outline.doc_kind, "chunks": payload_chunks},
         ensure_ascii=False,
     )
-    content = None
-    try:
-        with httpx.Client(timeout=120.0) as client:
-            r = client.post(
-                "http://127.0.0.1:11434/api/chat",
-                json={
-                    "model": ollama_model,
-                    "stream": False,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "options": {"temperature": 0.7, "num_predict": 2000},
-                },
-            )
-            if r.status_code == 200:
-                content = r.json()["message"]["content"]
-    except Exception:
-        content = None
-
-    if not content and openai_base:
-        headers = {"Authorization": f"Bearer {openai_key or 'sk-local'}"}
-        with httpx.Client(timeout=120.0, base_url=openai_base.rstrip("/")) as client:
-            r = client.post(
-                "/v1/chat/completions",
-                headers=headers,
-                json={
-                    "model": ollama_model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.7,
-                },
-            )
-            r.raise_for_status()
-            content = r.json()["choices"][0]["message"]["content"]
-
+    content = _chat_complete(
+        system, user, ollama_model, openai_base, openai_key, num_predict=2200
+    )
     if not content:
         return None
     data = _parse_json_obj(content)
@@ -201,7 +337,9 @@ def _script_from_dict(title: str, data: dict[str, Any], doc_kind: str) -> Script
             role = item.get("role") or "pbp"
             if role not in ("pbp", "color", "both"):
                 role = "pbp"
-            speaker = item.get("speaker") or (PBP_NAME if role == "pbp" else COLOR_NAME)
+            speaker = item.get("speaker") or (
+                PBP_NAME if role == "pbp" else COLOR_NAME
+            )
             text = (item.get("text") or "").strip()
             if text:
                 out.append(

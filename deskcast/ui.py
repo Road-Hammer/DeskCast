@@ -36,6 +36,7 @@ from tkinter import (
 from tkinter.scrolledtext import ScrolledText
 
 from .characters import project_assets_dir
+from .hosts import DEFAULT_DESK_MODE, desk_mode_from_ui_label, desk_mode_ui_labels, get_desk_mode
 from .pipeline import plan_only, run_pipeline
 
 APP_TITLE = "DeskCast — STWL"
@@ -47,8 +48,11 @@ Susquehanna Timberwolf Lines, LLC (STWL)
 
 WHAT DESKCAST DOES
   DeskCast turns PDF, Word (DOCX), or text documents into dual-host
-  “desk cast” videos: Mike (play-by-play) and Dana (color / risk), with
-  speech, studio visuals, and FFmpeg assembly.
+  “desk cast” videos with speech, studio visuals, and FFmpeg assembly.
+
+  Official hosts: Mike (play-by-play) and Dana (color / risk).
+  Optional desk modes add unofficial *test* personas (Bo, Dale, Art)
+  for internal product testing only — see PERSONAS_UNOFFICIAL.md.
 
   For large contracts and legislation, DeskCast can:
   • Parse legal structure (Articles, Sections, Schedules, Appendices, …)
@@ -73,6 +77,13 @@ RECOMMENDED OPTIONS (CONTRACTS & LEGISLATION)
   • No LLM (rules only) — ON until a local model is configured
   • Offline TTS — ON only if you need zero network (system voices)
   • Visuals — “characters” for dual hosts; “slides” for text cards
+  • Desk mode —
+      sports          Mike & Dana (official)
+      clear_channel   Bo & Dale [UNOFFICIAL TEST]
+      night_watch     Art & Dana [UNOFFICIAL TEST]
+    Unofficial modes are STWL working names for testing only. If testing
+    goes well we may seek a proper license; otherwise we design original
+    hosts with a similar essence. Not for public branding yet.
 
 OUTPUT FOLDER LAYOUT (AFTER PRODUCE)
   out/<job_id>/
@@ -89,6 +100,7 @@ CLI EQUIVALENTS
   python -m deskcast ui
   python -m deskcast plan path\\to\\doc.pdf --episode-minutes 20
   python -m deskcast run path\\to\\doc.pdf --legal --multi-episode --no-llm
+  python -m deskcast run path\\to\\doc.pdf --desk-mode clear_channel --no-llm
 
 REQUIREMENTS
   • Python 3.11+ environment with DeskCast installed
@@ -151,6 +163,15 @@ Q: Visuals: characters / hybrid / slides?
 A: characters = dual desk hosts (default).
    hybrid = hosts + optional B-roll images from assets/broll.
    slides = text cards only (fastest, least “show-like”).
+
+Q: What is Desk mode?
+A: sports = Mike & Dana (official STWL pair).
+   clear_channel = Bo & Dale — UNOFFICIAL TEST personas.
+   night_watch = Art & Dana — Art is UNOFFICIAL TEST.
+   Unofficial names are STWL working labels for product testing only
+   (not real DJ likenesses or licensed brands). If testing goes well
+   we may seek licenses; otherwise we design original hosts with a
+   similar essence. See PERSONAS_UNOFFICIAL.md.
 
 Q: Where is my video?
 A: After Produce, use “Open last job folder”. Look for deskcast.mp4
@@ -222,6 +243,7 @@ class DeskCastApp:
         self.no_llm = BooleanVar(value=True)
         self.offline_tts = BooleanVar(value=False)
         self.visuals = StringVar(value="characters")
+        self.desk_mode = StringVar(value=get_desk_mode(DEFAULT_DESK_MODE).label)
         self.status = StringVar(value="Ready.")
         self._busy = False
         self._last_job: Path | None = None
@@ -311,6 +333,15 @@ class DeskCastApp:
             state="readonly",
             width=14,
         ).grid(row=4, column=1, sticky="w", padx=4)
+
+        ttk.Label(opt, text="Desk mode").grid(row=5, column=0, sticky="w", padx=4, pady=4)
+        ttk.Combobox(
+            opt,
+            textvariable=self.desk_mode,
+            values=desk_mode_ui_labels(),
+            state="readonly",
+            width=48,
+        ).grid(row=5, column=1, columnspan=2, sticky="w", padx=4)
 
         # Actions
         act = ttk.Frame(frm)
@@ -514,6 +545,7 @@ class DeskCastApp:
             try:
                 # Ensure ffmpeg on PATH if winget install exists
                 _ensure_ffmpeg_path()
+                dmode = desk_mode_from_ui_label(self.desk_mode.get())
                 job = run_pipeline(
                     src,
                     out_root=Path(self.out_dir.get()),
@@ -526,6 +558,7 @@ class DeskCastApp:
                     legal_mode=self.legal_mode.get(),
                     episode_minutes=float(self.episode_minutes.get()),
                     multi_episode=self.multi_episode.get(),
+                    desk_mode=dmode,
                     progress=progress,
                 )
                 self._last_job = job

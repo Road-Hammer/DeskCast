@@ -19,6 +19,7 @@ from typing import Literal
 from PIL import Image, ImageDraw, ImageFont
 
 from .characters import render_character_frames
+from .hosts import DeskMode, DeskModeId
 from .models import Line, Outline, Script
 
 VisualMode = Literal["slides", "characters", "hybrid"]
@@ -72,6 +73,7 @@ def render_slides(
     visuals: VisualMode = "characters",
     assets_dir: Path | None = None,
     broll_dir: Path | None = None,
+    desk_mode: str | DeskModeId | DeskMode | None = None,
 ) -> list[Path]:
     """Render per-line frames. Default visuals=characters (phase-1 desk hosts)."""
     if visuals in ("characters", "hybrid"):
@@ -82,6 +84,7 @@ def render_slides(
             assets_dir=assets_dir,
             broll_dir=broll_dir,
             hybrid=(visuals == "hybrid"),
+            desk_mode=desk_mode,
         )
     return _render_classic_slides(script, outline, slides_dir)
 

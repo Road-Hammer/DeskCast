@@ -19,6 +19,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 
+from .hosts import desk_mode_choices, get_desk_mode, normalize_desk_mode
 from .pipeline import plan_only, run_pipeline
 from .slides import VisualMode
 
@@ -38,8 +39,12 @@ def run(
     max_chunks: int = typer.Option(24, "--max-chunks", min=2, max=40),
     no_llm: bool = typer.Option(False, "--no-llm", help="Force heuristic script"),
     ollama_model: str = typer.Option("llama3.2:1b", "--ollama-model"),
-    voice_a: str = typer.Option("en-US-GuyNeural", "--voice-a"),
-    voice_b: str = typer.Option("en-US-JennyNeural", "--voice-b"),
+    voice_a: Optional[str] = typer.Option(
+        None, "--voice-a", help="Override PBP voice (default: desk host voice)"
+    ),
+    voice_b: Optional[str] = typer.Option(
+        None, "--voice-b", help="Override color voice (default: desk host voice)"
+    ),
     offline_tts: bool = typer.Option(False, "--offline-tts"),
     visuals: str = typer.Option("characters", "--visuals", "-v"),
     broll: Optional[Path] = typer.Option(None, "--broll"),
@@ -49,11 +54,21 @@ def run(
     multi_episode: bool = typer.Option(
         True, "--multi-episode/--single-episode", help="Split long legal docs into episodes"
     ),
+    desk_mode: str = typer.Option(
+        "sports",
+        "--desk-mode",
+        "-d",
+        help="sports | clear_channel | night_watch  (last two = unofficial test personas)",
+    ),
 ) -> None:
     """Build desk-cast MP4(s) from a PDF/DOCX/TXT/MD document."""
     mode = visuals.lower().strip()
     if mode not in ("slides", "characters", "hybrid"):
         raise typer.BadParameter("visuals must be slides, characters, or hybrid")
+    try:
+        dmode = normalize_desk_mode(desk_mode)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
     job = run_pipeline(
         source,
         out_root=out,
@@ -70,6 +85,7 @@ def run(
         legal_mode=legal,
         episode_minutes=episode_minutes,
         multi_episode=multi_episode,
+        desk_mode=dmode,
     )
     console.print(f"[bold]Job:[/bold] {job}")
 
@@ -107,13 +123,21 @@ def ui() -> None:
 @app.command("init-assets")
 def init_assets(
     assets: Path = typer.Option(Path("assets"), "--assets"),
+    desk_mode: str = typer.Option("sports", "--desk-mode", "-d"),
 ) -> None:
-    """Generate default Mike/Dana portraits and desk background."""
+    """Generate host portraits (all personas) and desk background."""
     from .characters import ensure_default_hosts
 
-    paths = ensure_default_hosts(assets.resolve())
+    try:
+        dmode = normalize_desk_mode(desk_mode)
+    except ValueError as e:
+        raise typer.BadParameter(str(e)) from e
+    paths = ensure_default_hosts(assets.resolve(), dmode)
+    desk = get_desk_mode(dmode)
+    console.print(f"Desk: [cyan]{desk.label}[/cyan]")
     for k, p in paths.items():
         console.print(f"[green]{k}[/green] → {p}")
+    console.print(f"Modes: {', '.join(desk_mode_choices())}")
 
 
 @app.command("version")

@@ -25,6 +25,7 @@ from rich.panel import Panel
 from .characters import ensure_default_hosts, project_assets_dir
 from .episode_planner import packs_for_episode, plan_episodes, plan_markdown
 from .extract import extract_text
+from .hosts import DEFAULT_DESK_MODE, DeskMode, DeskModeId, get_desk_mode, unofficial_banner
 from .legal_structure import (
     parse_legal_structure,
     structure_markdown,
@@ -51,8 +52,8 @@ def run_pipeline(
     max_chunks: int = 10,
     use_llm: bool = True,
     ollama_model: str = "llama3.2:1b",
-    voice_a: str = "en-US-GuyNeural",
-    voice_b: str = "en-US-JennyNeural",
+    voice_a: str | None = None,
+    voice_b: str | None = None,
     offline_tts: bool = False,
     visuals: VisualMode = "characters",
     broll_dir: Path | None = None,
@@ -60,6 +61,7 @@ def run_pipeline(
     legal_mode: bool = True,
     episode_minutes: float = 20.0,
     multi_episode: bool = True,
+    desk_mode: str | DeskModeId | None = DEFAULT_DESK_MODE,
     progress: ProgressCb | None = None,
 ) -> Path:
     """
@@ -73,6 +75,11 @@ def run_pipeline(
         if progress:
             progress(msg)
 
+    desk = get_desk_mode(desk_mode)
+    # Default voices follow desk hosts unless caller overrides explicitly
+    voice_a = voice_a or desk.pbp.voice
+    voice_b = voice_b or desk.color.voice
+
     source = source.expanduser().resolve()
     out_root = (out_root or Path("out")).expanduser().resolve()
     job_id = time.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
@@ -80,6 +87,12 @@ def run_pipeline(
     job.mkdir(parents=True, exist_ok=True)
 
     console.print(Panel.fit(f"[bold]DeskCast[/bold] job [cyan]{job_id}[/cyan]\n{source}", border_style="red"))
+    log(f"Desk mode: [cyan]{desk.id}[/cyan] — {desk.pbp.name} / {desk.color.name}"
+        + (" [yellow]UNOFFICIAL TEST[/yellow]" if not desk.official else ""))
+    banner = unofficial_banner(desk)
+    if banner:
+        log(f"[yellow]{banner}[/yellow]")
+        (job / "PERSONAS_UNOFFICIAL.txt").write_text(banner + "\n\nSee PERSONAS_UNOFFICIAL.md\n", encoding="utf-8")
 
     log("[bold]1/7 Extract[/bold]")
     text = extract_text(source)
@@ -126,7 +139,7 @@ def run_pipeline(
         plan = None
 
     assets = assets_dir or project_assets_dir()
-    ensure_default_hosts(assets)
+    ensure_default_hosts(assets, desk)
     broll = broll_dir or (assets / "broll")
 
     produced: list[Path] = []
@@ -167,6 +180,7 @@ def run_pipeline(
                 visuals=visuals,
                 assets=assets,
                 broll=broll,
+                desk=desk,
                 log=log,
                 out_name="deskcast.mp4",
             )
@@ -203,13 +217,14 @@ def run_pipeline(
             visuals=visuals,
             assets=assets,
             broll=broll,
+            desk=desk,
             log=log,
             out_name="deskcast.mp4",
             start_step=4,
         )
         produced.append(mp4)
         script = _load_script(job)
-        report = _report(source, outline, script, mp4, visuals=visuals, assets=assets)
+        report = _report(source, outline, script, mp4, visuals=visuals, assets=assets, desk=desk)
         (job / "report.md").write_text(report, encoding="utf-8")
         _write_self_contained(job, outline, script, source)
 
@@ -326,28 +341,42 @@ def _render_one(
     assets: Path,
     broll: Path,
     log: ProgressCb,
+    desk: DeskMode | None = None,
     out_name: str = "deskcast.mp4",
     start_step: int = 4,
 ) -> Path:
+    desk = desk or get_desk_mode(DEFAULT_DESK_MODE)
     dest.mkdir(parents=True, exist_ok=True)
     logic = logic_summary(outline)
     (dest / "outline.json").write_text(outline.model_dump_json(indent=2), encoding="utf-8")
     (dest / "logic.json").write_text(json.dumps(logic, indent=2), encoding="utf-8")
 
-    log(f"  [{start_step}/7] Script")
-    script: Script = generate_script(outline, use_llm=use_llm, ollama_model=ollama_model)
+    log(f"  [{start_step}/7] Script ({desk.pbp.name}/{desk.color.name})")
+    script: Script = generate_script(
+        outline, use_llm=use_llm, ollama_model=ollama_model, desk_mode=desk
+    )
     (dest / "script.json").write_text(script.model_dump_json(indent=2), encoding="utf-8")
     log(f"    lines={len(script.all_lines())}")
 
-    log(f"  [{start_step + 1}/7] TTS")
+    log(f"  [{start_step + 1}/7] TTS ({voice_a} / {voice_b})")
     clips = synthesize_script(
         script,
         dest / "audio",
         voice_a=voice_a,
         voice_b=voice_b,
         offline=offline_tts,
+        prosody_a={
+            "rate": desk.pbp.rate,
+            "pitch": desk.pbp.pitch,
+            "volume": desk.pbp.volume,
+        },
+        prosody_b={
+            "rate": desk.color.rate,
+            "pitch": desk.color.pitch,
+            "volume": desk.color.volume,
+        },
     )
-    log(f"    clips={len(clips)}")
+    log(f"    clips={len(clips)}  prosody pbp={desk.pbp.rate}/{desk.pbp.pitch}")
 
     log(f"  [{start_step + 2}/7] Visuals ({visuals})")
     slides = render_slides(
@@ -357,6 +386,7 @@ def _render_one(
         visuals=visuals,
         assets_dir=assets,
         broll_dir=broll,
+        desk_mode=desk,
     )
     log(f"    frames={len(slides)}")
 
@@ -369,6 +399,7 @@ def _render_one(
         mp4,
         visuals=visuals,
         assets=assets,
+        desk=desk,
     )
     (dest / "report.md").write_text(report, encoding="utf-8")
     return mp4
@@ -504,7 +535,12 @@ def _report(
     *,
     visuals: str,
     assets: Path,
+    desk: DeskMode | None = None,
 ) -> str:
+    desk = desk or get_desk_mode(DEFAULT_DESK_MODE)
+    status = "official" if desk.official else "UNOFFICIAL TEST — see PERSONAS_UNOFFICIAL.md"
+    banner = unofficial_banner(desk)
+    banner_block = f"\n> **Disclaimer:** {banner}\n" if banner else ""
     return f"""# DeskCast report
 
 - **Source:** `{source}`
@@ -513,10 +549,11 @@ def _report(
 - **Words (approx):** {outline.total_words}
 - **Script lines:** {len(script.all_lines())}
 - **Visuals:** `{visuals}`
+- **Desk mode:** `{desk.id}` ({status})
 - **Doc kind (logic):** `{outline.doc_kind}`
 - **Assets:** `{assets}`
 - **Output:** `{mp4}`
-
+{banner_block}
 ## Logic
 
 - Legal structure parse + episode planner for contracts / legislation
@@ -525,8 +562,9 @@ def _report(
 
 ## Hosts
 
-- **Mike** — play-by-play
-- **Dana** — color / risk
+- **{desk.pbp.name}** — {desk.pbp.role_label.lower()} ({desk.pbp.voice})
+- **{desk.color.name}** — {desk.color.role_label.lower()} ({desk.color.voice})
+- Mode label: {desk.label}
 
 ---
 

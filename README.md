@@ -126,14 +126,27 @@ Long jobs write `out/<job>/episodes/ep01/…` plus `MASTER_INDEX.md`.
 
 | Mode | Flag | What you get |
 |------|------|----------------|
-| **characters** (default) | `--visuals characters` | Dual desk hosts (Mike/Dana), active speaker lit, lower-thirds |
+| **characters** (default) | `--visuals characters` | Dual desk hosts, active speaker lit, lower-thirds |
 | **hybrid** | `--visuals hybrid` | Same + cycles images from `assets/broll/` behind the desk |
 | **slides** | `--visuals slides` | Classic text-card graphics only |
 
+### Desk modes (host pairs)
+
+| Mode | Flag | Pair | Status |
+|------|------|------|--------|
+| **sports** (default) | `--desk-mode sports` | Mike + Dana | Official STWL |
+| **clear_channel** | `--desk-mode clear_channel` | Bo + Dale | **Unofficial test** |
+| **night_watch** | `--desk-mode night_watch` | Art + Dana | **Unofficial test** (Art) |
+
+Bo, Dale, and Art are STWL **working names for internal product testing only** — not licensed likenesses or real radio brands. If testing goes well we may pursue licenses; otherwise we design original hosts with a similar essence. See [`PERSONAS_UNOFFICIAL.md`](PERSONAS_UNOFFICIAL.md).
+
 ```text
 assets/
-  hosts/mike_pbp.png      # replace with your art
+  hosts/mike_pbp.png      # official
   hosts/dana_color.png
+  hosts/bo_overnight.png  # unofficial test (placeholder if missing)
+  hosts/dale_road.png
+  hosts/art_nightwatch.png
   set/desk_bg.png
   broll/*.jpg             # optional stills for --visuals hybrid
 ```
@@ -143,9 +156,10 @@ assets/
 ```text
 --title "My Show"
 --visuals characters     # or hybrid / slides
+--desk-mode sports       # or clear_channel / night_watch
 --broll path\to\images
 --max-chunks 24          # packs per episode (2–40)
---voice-a en-US-GuyNeural
+--voice-a en-US-GuyNeural   # optional; defaults to desk host voice
 --voice-b en-US-JennyNeural
 --offline-tts            # pyttsx3 only (no network)
 --no-llm                 # force heuristic script (fastest)

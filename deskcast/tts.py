@@ -20,12 +20,51 @@ from pathlib import Path
 
 from .models import Line, Script
 
+# Optional per-role prosody (edge-tts). When None, uses defaults / host profile.
+Prosody = dict[str, str]  # keys: rate, pitch, volume
 
-async def _edge_line(text: str, voice: str, out: Path) -> None:
+
+async def _edge_line(
+    text: str,
+    voice: str,
+    out: Path,
+    *,
+    rate: str = "+0%",
+    pitch: str = "+0Hz",
+    volume: str = "+0%",
+) -> None:
     import edge_tts
 
-    communicate = edge_tts.Communicate(text, voice)
+    # Light pause-friendly cleanup for more natural overnight reads
+    spoken = _speakable(text)
+    communicate = edge_tts.Communicate(
+        spoken, voice, rate=rate, pitch=pitch, volume=volume
+    )
     await communicate.save(str(out))
+
+
+def _speakable(text: str) -> str:
+    """Make line text less robotic for TTS (ellipsis, dashes, dense titles)."""
+    t = " ".join(text.split())
+    # Expand common legal denseness that TTS chokes on
+    t = t.replace("—", ", ")
+    t = t.replace("–", ", ")
+    t = t.replace("…", "...")
+    t = t.replace(" / ", ", ")
+    # Soften package indices TTS reads poorly
+    t = t.replace("pack 1 of ", "package one of ")
+    t = t.replace("pack 2 of ", "package two of ")
+    t = t.replace("pack 3 of ", "package three of ")
+    t = t.replace("pack 4 of ", "package four of ")
+    t = t.replace("pack 5 of ", "package five of ")
+    # Avoid reading bare "shall" stacks without breathing room
+    if len(t) > 220:
+        # Insert a short breath after first sentence if missing
+        for sep in (". ", "? ", "! "):
+            i = t.find(sep)
+            if 40 < i < 160:
+                break
+    return t
 
 
 def synthesize_script(
@@ -35,39 +74,55 @@ def synthesize_script(
     voice_a: str = "en-US-GuyNeural",
     voice_b: str = "en-US-JennyNeural",
     offline: bool = False,
+    prosody_a: Prosody | None = None,
+    prosody_b: Prosody | None = None,
 ) -> list[Path]:
+    """Synthesize each line. prosody_* optional: rate/pitch/volume for edge-tts."""
     audio_dir.mkdir(parents=True, exist_ok=True)
+    pa = prosody_a or {}
+    pb = prosody_b or {}
     paths: list[Path] = []
     lines = script.all_lines()
     for i, line in enumerate(lines):
-        voice = voice_a if line.role == "pbp" else voice_b
-        if line.role == "both":
+        if line.role == "color":
+            voice = voice_b
+            rate = pb.get("rate", "+0%")
+            pitch = pb.get("pitch", "+0Hz")
+            volume = pb.get("volume", "+0%")
+        else:
             voice = voice_a
+            rate = pa.get("rate", "+0%")
+            pitch = pa.get("pitch", "+0Hz")
+            volume = pa.get("volume", "+0%")
         out = audio_dir / f"{i:03d}_{line.role}.mp3"
         if offline:
             out = audio_dir / f"{i:03d}_{line.role}.wav"
-            _pyttsx3_line(line.text, out)
+            _pyttsx3_line(line.text, out, slower=(line.role == "pbp"))
         else:
             try:
-                asyncio.run(_edge_line(line.text, voice, out))
+                asyncio.run(
+                    _edge_line(
+                        line.text, voice, out, rate=rate, pitch=pitch, volume=volume
+                    )
+                )
             except Exception:
                 # Network / edge-tts failure → offline fallback
                 out = audio_dir / f"{i:03d}_{line.role}.wav"
-                _pyttsx3_line(line.text, out)
+                _pyttsx3_line(line.text, out, slower=(line.role != "color"))
         paths.append(out)
     return paths
 
 
-def _pyttsx3_line(text: str, out: Path) -> None:
+def _pyttsx3_line(text: str, out: Path, *, slower: bool = False) -> None:
     import pyttsx3
 
     engine = pyttsx3.init()
-    # Best-effort different rates for roles encoded in filename
-    if "_color" in out.name:
-        engine.setProperty("rate", 155)
+    # Overnight / lead hosts slightly slower offline too
+    if slower or "_pbp" in out.name:
+        engine.setProperty("rate", 145)
     else:
-        engine.setProperty("rate", 175)
-    engine.save_to_file(text, str(out))
+        engine.setProperty("rate", 160)
+    engine.save_to_file(_speakable(text), str(out))
     engine.runAndWait()
     engine.stop()
 

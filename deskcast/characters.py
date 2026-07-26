@@ -17,6 +17,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
+from .hosts import DEFAULT_DESK_MODE, DeskMode, DeskModeId, HostProfile, get_desk_mode
 from .models import Line, Outline, Script
 
 W, H = 1280, 720
@@ -29,30 +30,59 @@ PBP_COLOR = (200, 40, 40)
 COLOR_COLOR = (30, 110, 190)
 ON_AIR = (50, 210, 100)
 SHADOW = (0, 0, 0, 140)
+UNOFFICIAL_BADGE = (200, 140, 40)
 
 
 def project_assets_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "assets"
 
 
-def ensure_default_hosts(assets: Path | None = None) -> dict[str, Path]:
-    """Return host/desk asset paths. Prefer photoreal assets; only draw placeholders if missing."""
+def _portrait_path(hosts_dir: Path, host: HostProfile) -> Path:
+    return hosts_dir / f"{host.portrait_stem}.png"
+
+
+def _ensure_portrait(path: Path, host: HostProfile) -> None:
+    if path.exists() and path.stat().st_size >= 50_000:
+        return
+    role = host.role_label.split()[0][:12]
+    _draw_host_portrait(
+        path,
+        name=host.name.upper(),
+        role=role,
+        skin=host.skin,
+        shirt=host.shirt,
+        hair=host.hair,
+    )
+
+
+def ensure_default_hosts(
+    assets: Path | None = None,
+    desk_mode: str | DeskModeId | DeskMode | None = None,
+) -> dict[str, Path]:
+    """Return host/desk asset paths for the active desk mode.
+
+    Prefer photoreal assets; draw placeholders if missing. Also ensures
+    portraits for all registered hosts so init-assets covers every desk.
+    """
+    from .hosts import HOSTS
+
     root = assets or project_assets_dir()
     hosts = root / "hosts"
     hosts.mkdir(parents=True, exist_ok=True)
     (root / "broll").mkdir(parents=True, exist_ok=True)
     (root / "set").mkdir(parents=True, exist_ok=True)
 
+    desk = desk_mode if isinstance(desk_mode, DeskMode) else get_desk_mode(desk_mode)
+
+    # Ensure every registered persona has a portrait on disk
+    for host in HOSTS.values():
+        _ensure_portrait(_portrait_path(hosts, host), host)
+
     paths = {
-        "pbp": hosts / "mike_pbp.png",
-        "color": hosts / "dana_color.png",
+        "pbp": _portrait_path(hosts, desk.pbp),
+        "color": _portrait_path(hosts, desk.color),
         "desk": root / "set" / "desk_bg.png",
     }
-    # Placeholders only if professional assets not present
-    if not paths["pbp"].exists() or paths["pbp"].stat().st_size < 50_000:
-        _draw_host_portrait(paths["pbp"], name="MIKE", role="PBP", skin=(230, 190, 160), shirt=PBP_COLOR, hair=(40, 30, 25))
-    if not paths["color"].exists() or paths["color"].stat().st_size < 50_000:
-        _draw_host_portrait(paths["color"], name="DANA", role="COLOR", skin=(210, 170, 140), shirt=COLOR_COLOR, hair=(90, 55, 35))
     if not paths["desk"].exists() or paths["desk"].stat().st_size < 50_000:
         _draw_simple_desk(paths["desk"])
     return paths
@@ -233,12 +263,16 @@ def render_character_frame(
     segment_label: str = "",
     broll: Image.Image | None = None,
     hybrid: bool = False,
+    desk: DeskMode | None = None,
 ) -> None:
-    desk = Image.open(host_paths["desk"]).convert("RGB").resize((W, H), Image.Resampling.LANCZOS)
+    mode = desk or get_desk_mode(DEFAULT_DESK_MODE)
+    pbp_color = mode.pbp.shirt
+    color_color = mode.color.shirt
+    desk_bg = Image.open(host_paths["desk"]).convert("RGB").resize((W, H), Image.Resampling.LANCZOS)
     if broll is not None:
-        base = Image.blend(broll.convert("RGB"), desk, 0.55).convert("RGBA")
+        base = Image.blend(broll.convert("RGB"), desk_bg, 0.55).convert("RGBA")
     else:
-        base = desk.convert("RGBA")
+        base = desk_bg.convert("RGBA")
 
     # Subtle top gradient for broadcast bar readability
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -280,13 +314,16 @@ def render_character_frame(
     d.rectangle([0, 0, W, 52], fill=(8, 10, 18, 230))
     d.rectangle([0, 52, W, 56], fill=ACCENT)
     d.text((22, 12), "DESKCAST", font=title_f, fill=GOLD)
-    d.text((200, 18), "LIVE DESK", font=small_f, fill=MUTED)
+    d.text((200, 18), mode.live_tag[:18], font=small_f, fill=MUTED)
     # Small ownership mark (Susquehanna Timberwolf Lines, LLC)
     d.text((200, 34), "(c) 2026 Susquehanna Timberwolf Lines, LLC", font=_font(11), fill=(120, 130, 150))
     # LIVE pill
     d.rounded_rectangle([W - 280, 12, W - 210, 40], radius=4, fill=ACCENT)
     d.text((W - 268, 16), "LIVE", font=small_f, fill=WHITE)
     d.text((W - 195, 16), f"{index + 1}/{total}", font=small_f, fill=MUTED)
+    if not mode.official:
+        d.rounded_rectangle([W - 420, 12, W - 290, 40], radius=4, fill=UNOFFICIAL_BADGE)
+        d.text((W - 412, 16), "UNOFFICIAL", font=_font(12, bold=True), fill=(20, 15, 5))
 
     # Show title
     d.rounded_rectangle([20, 68, 20 + min(700, 18 * max(8, len(show_title[:42]))), 104], radius=6, fill=(0, 0, 0, 170))
@@ -299,15 +336,15 @@ def render_character_frame(
 
     # Lower thirds
     if line.role == "pbp":
-        _lower_third(d, 60, 518, "MIKE", "PLAY-BY-PLAY", PBP_COLOR)
+        _lower_third(d, 60, 518, mode.pbp.name.upper(), mode.pbp.role_label, pbp_color)
     elif line.role == "color":
-        _lower_third(d, 860, 518, "DANA", "COLOR ANALYST", COLOR_COLOR)
+        _lower_third(d, 860, 518, mode.color.name.upper(), mode.color.role_label, color_color)
     else:
         _lower_third(d, 460, 518, line.speaker.upper()[:12], "DESK", GOLD)
 
     # Dialogue plate
     d.rounded_rectangle([16, 588, W - 16, H - 8], radius=8, fill=(6, 8, 16, 235))
-    stripe = PBP_COLOR if line.role == "pbp" else (COLOR_COLOR if line.role == "color" else GOLD)
+    stripe = pbp_color if line.role == "pbp" else (color_color if line.role == "color" else GOLD)
     d.rectangle([16, 588, 22, H - 8], fill=stripe)
     y = 598
     for ln in _wrap(d, line.text, body_f, W - 70)[:3]:
@@ -330,8 +367,10 @@ def render_character_frames(
     assets_dir: Path | None = None,
     broll_dir: Path | None = None,
     hybrid: bool = False,
+    desk_mode: str | DeskModeId | DeskMode | None = None,
 ) -> list[Path]:
-    host_paths = ensure_default_hosts(assets_dir)
+    desk = desk_mode if isinstance(desk_mode, DeskMode) else get_desk_mode(desk_mode)
+    host_paths = ensure_default_hosts(assets_dir, desk)
     bdir = broll_dir or (project_assets_dir() / "broll")
     slides_dir.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
@@ -373,6 +412,7 @@ def render_character_frames(
             segment_label=seg,
             broll=use_broll,
             hybrid=hybrid,
+            desk=desk,
         )
         paths.append(out)
     return paths

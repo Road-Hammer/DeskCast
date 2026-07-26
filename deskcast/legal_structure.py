@@ -320,6 +320,11 @@ def _prep_lines(text: str) -> list[str]:
         ln = re.sub(r"[ \t]+", " ", raw).strip()
         if not ln:
             continue
+        # Markdown ATATX headings → plain legal headings
+        ln = re.sub(r"^#{1,6}\s+", "", ln)
+        # Markdown bold/italic noise on headings
+        ln = re.sub(r"^\*{1,2}(.+?)\*{1,2}$", r"\1", ln)
+        ln = re.sub(r"^_{1,2}(.+?)_{1,2}$", r"\1", ln)
         if _JUNK.search(ln) and len(ln.split()) <= 16:
             continue
         # Drop pure TOC leaders
